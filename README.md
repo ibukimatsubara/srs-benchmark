@@ -203,6 +203,52 @@ Please refer to the following repositories:
 - [fsrs-vs-sm17](https://github.com/open-spaced-repetition/fsrs-vs-sm17)
 
 
+## Pythonファイルの説明 (Python Files Overview)
+
+### メインスクリプト (Main Scripts)
+
+- **`script.py`**: FSRS-6およびその変種の標準ベンチマーク実行スクリプト。複数ユーザーに対するFSRSアルゴリズムの並列評価を実行し、TimeSeriesSplitを用いて時系列分割で精度を測定します。
+
+- **`other.py`**: レガシーアルゴリズム(FSRSv3、HLR、SM2など)やニューラルネットワークモデル(GRU、LSTM、RWKVなど)のベンチマーク実行スクリプト。`script.py`とは異なり、様々なモデルタイプに対応した統一的なトレーニング・評価フレームワークを提供します。
+
+### 設定・データ関連 (Configuration & Data)
+
+- **`config.py`**: コマンドライン引数の定義と設定管理。モデル名、データパス、評価オプション、並列プロセス数などの設定を一元管理します。`Config`クラスは全体の設定を保持します。
+
+- **`data_loader.py`**: ユーザーデータの読み込みと前処理を担当する`UserDataLoader`クラス。Parquet形式のrevlogsを読み込み、特徴量を生成し、プリセットやデッキ単位のパーティション分割にも対応します。
+
+### 評価・分析関連 (Evaluation & Analysis)
+
+- **`evaluate.py`**: 評価指標の計算関数群。Log Loss、RMSE (bins)、AUCなどのメトリクスを算出し、信頼区間の計算も実行します。ベンチマーク結果の統計的な検証を行います。
+
+- **`analysis.py`**: ベンチマーク結果の分析・可視化スクリプト。パラメータ分布の可視化、KDEを用いた密度推定、HSMアルゴリズムによる統計分析などを実行します。
+
+- **`utils.py`**: 汎用ユーティリティ関数集。エラーハンドリング用デコレータ(`catch_exceptions`)、RMSE (bins)の計算関数(`rmse_matrix`)、アルゴリズム間のクロス比較関数などを含みます。
+
+### 比較・統計分析 (Comparison & Statistical Analysis)
+
+- **`superiority.py`**: アルゴリズム間の優越性マトリックスを生成。各ユーザーにおいてアルゴリズムA対アルゴリズムBの勝率を計算し、ヒートマップとして可視化します。
+
+- **`superiority_small.py`**: `superiority.py`の縮小版。主要アルゴリズムのみに絞った優越性マトリックスを生成します。
+
+- **`significance_table.py`**: アルゴリズム間の統計的有意性テーブルを生成。Wilcoxon符号順位検定やt検定を用いて効果量(effect size)とp値を計算します。
+
+- **`significance_table_small.py`**: `significance_table.py`の縮小版。主要アルゴリズムのみに絞った有意性テーブルを生成します。
+
+### ニューラルネットワーク訓練関連 (Neural Network Training)
+
+- **`reptile_trainer.py`**: Reptileメタ学習アルゴリズムを用いたニューラルネットワークの訓練。複数ユーザーから汎化可能なモデルパラメータを学習し、個別ユーザーへのファインチューニングをサポートします。
+
+- **`reptile_optuna.py`**: Optunaを用いたReptileトレーニングのハイパーパラメータ最適化スクリプト。学習率、バッチサイズ、正則化パラメータなどを自動的に最適化します。
+
+- **`pretrain.py`**: ニューラルネットワークモデル(GRU、LSTM、Transformerなど)の事前訓練スクリプト。多数のユーザーデータで事前訓練し、モデルの重みを保存します。
+
+### その他 (Others)
+
+- **`performance.py`**: ベンチマークの実行時間とメモリ使用量を測定するプロファイリングスクリプト。異なるアルゴリズムの計算コストを比較します。
+
+- **`setup.py`**: パッケージのセットアップファイル。依存関係やパッケージメタデータを定義します(現在は使用されていない可能性があります)。
+
 ## How to run the benchmark
 
 ### Requirements

@@ -9,11 +9,15 @@ dependencies = [
     "huggingface_hub",
     "wandb",
     "torch",
+    "pyarrow>=21.0.0",
 ]
 
 [build-system]
 requires = ["setuptools", "wheel", "torch"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []  # Don't auto-discover packages (exclude rwkv)
 
 [tool.mypy]
 ignore_missing_imports = true

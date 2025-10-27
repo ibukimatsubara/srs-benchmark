@@ -10,7 +10,6 @@ from sklearn.model_selection import TimeSeriesSplit  # type: ignore
 from sklearn.metrics import root_mean_squared_error, log_loss, roc_auc_score  # type: ignore
 from statsmodels.nonparametric.smoothers_lowess import lowess  # type: ignore
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import pyarrow.parquet as pq  # type: ignore
 import torch
 from config import create_parser
 from utils import catch_exceptions, cum_concat
@@ -235,7 +234,7 @@ def process(user_id):
     if SECS_IVL:
         columns.append("elapsed_seconds")
     df_revlogs = pd.read_parquet(
-        DATA_PATH / "revlogs" / f"{user_id=}",
+        DATA_PATH / "revlogs" / f"user_id={user_id}",
         filters=[("rating", "in", [1, 2, 3, 4])],
         columns=columns,
     )
@@ -376,7 +375,6 @@ def sort_jsonl(file):
 
 if __name__ == "__main__":
     unprocessed_users = []
-    dataset = pq.ParquetDataset(DATA_PATH / "revlogs")
     Path(f"evaluation/{path}").mkdir(parents=True, exist_ok=True)
     Path("result").mkdir(parents=True, exist_ok=True)
     Path("raw").mkdir(parents=True, exist_ok=True)
@@ -391,10 +389,12 @@ if __name__ == "__main__":
     if RAW and raw_file.exists():
         sort_jsonl(raw_file)
 
-    for user_id in dataset.partitioning.dictionaries[0]:
-        if user_id.as_py() in processed_user:
-            continue
-        unprocessed_users.append(user_id.as_py())
+    # Get user IDs from directory names (faster than ParquetDataset)
+    user_dirs = list((DATA_PATH / "revlogs").glob("user_id=*"))
+    for user_dir in user_dirs:
+        user_id = user_dir.name.replace("user_id=", "")
+        if user_id not in processed_user:
+            unprocessed_users.append(user_id)
 
     unprocessed_users.sort()
 

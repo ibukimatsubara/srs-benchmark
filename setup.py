@@ -51,7 +51,7 @@ def get_rwkv_extensions():
 setup(
     name="srs-benchmark",
     packages=find_packages(),
-    ext_modules=get_rwkv_extensions(),
+    ext_modules=[],  # Disabled RWKV extensions to avoid CUDA build issues
     install_requires=[
         "torch",
         "tqdm",
