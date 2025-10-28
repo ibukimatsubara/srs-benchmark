@@ -88,6 +88,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast", action="store_true")
     parser.add_argument("--secs", action="store_true")
+    parser.add_argument("--no-ci", action="store_true", help="Skip confidence interval calculation (use std instead)")
     args = parser.parse_args()
 
     # IL = interval lengths
@@ -253,7 +254,11 @@ if __name__ == "__main__":
                     size = size[~np.isnan(metrics.astype(float))]
                     metrics = metrics[~np.isnan(metrics.astype(float))]
                     wmean, wstd = weighted_avg_and_std(metrics, size)
-                    CI = confidence_interval(metrics, size)
+                    if args.no_ci:
+                        # Use standard deviation instead of confidence interval
+                        CI = wstd
+                    else:
+                        CI = confidence_interval(metrics, size)
                     rounded_mean, rounded_CI = sigdig(wmean, CI)
                     result += f" {rounded_mean}±{rounded_CI} |"
                 print(result + f" {input_features} |")
