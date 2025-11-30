@@ -3,40 +3,7 @@ import torch
 from pathlib import Path
 from typing import List, Optional, Literal, get_args
 
-ModelName = Literal[
-    # FSRS family
-    "FSRSv1",
-    "FSRSv2",
-    "FSRSv3",
-    "FSRSv4",
-    "FSRS-4.5",
-    "FSRS-5",
-    "FSRS-6",
-    "FSRS-6-one-step",
-    # Neural networks
-    "RNN",
-    "GRU",
-    "GRU-P",
-    "LSTM",
-    "Transformer",
-    "NN-17",
-    # Memory models
-    "SM2",
-    "SM2-trainable",
-    "Ebisu-v2",
-    "HLR",
-    "ACT-R",
-    "Anki",
-    # DASH variants
-    "DASH",
-    "DASH[MCM]",
-    "DASH[ACT-R]",
-    # Other models
-    "AVG",
-    "RMSE-BINS-EXPLOIT",
-    "MOVING-AVG",
-    "90%",
-]
+ModelName = Literal["FSRS-6", "FSRS-6-one-step", "FSRS-6-cefr"]
 
 
 def create_parser():
@@ -105,7 +72,7 @@ def create_parser():
     )
 
     # other.py only
-    parser.add_argument("--algo", default="FSRSv3", help="algorithm name")
+    parser.add_argument("--algo", default="FSRS-6", help="algorithm name")
     parser.add_argument(
         "--short", action="store_true", help="include short-term reviews"
     )
@@ -334,23 +301,6 @@ if __name__ == "__main__":
     if config.dev_mode:
         print(f"FSRS Optimizer Module Path: {config.fsrs_optimizer_module_path}")
     print(repr(config))
-
-    print("\n--- Loading configuration with custom arguments for testing ---")
-    test_args = ["--algo", "FSRSv2", "--secs", "--dev", "--short"]
-    test_config = load_config(custom_args_list=test_args)
-    print(f"Test Model Name: {test_config.model_name}")
-    print(f"Test Use Secs: {test_config.use_secs_intervals}")
-    print(f"Test Dev Mode: {test_config.dev_mode}")
-    print(f"Test S_MIN: {test_config.s_min}")  # Should be 1e-6
-    print(f"Test Initial Short Term: {test_config.initial_short_term_setting}")  # True
-    print(f"Test Effective Short Term: {test_config.include_short_term}")  # True
-
-    print("\n--- Testing FSRS-6 S_MIN logic ---")
-    fsrs6_no_secs_config = load_config(custom_args_list=["--algo", "FSRS-6"])
-    print(f"FSRS-6 (no secs) S_MIN: {fsrs6_no_secs_config.s_min}")  # Expected: 0.001
-
-    fsrs6_secs_config = load_config(custom_args_list=["--algo", "FSRS-6", "--secs"])
-    print(f"FSRS-6 (with secs) S_MIN: {fsrs6_secs_config.s_min}")  # Expected: 1e-6
 
     print("\n--- Testing effective_short_term logic ---")
     fsrs5_config_no_short_arg = load_config(custom_args_list=["--algo", "FSRS-5"])

@@ -25,8 +25,13 @@ class UserDataLoader:
         """
         # Load revlogs
         df_revlogs = pd.read_parquet(
-            self.data_path / "revlogs" / f"{user_id=}",
+            self.data_path / "revlogs" / f"user_id={user_id}",
         )
+
+        # Ensure CEFR level exists (0 = unknown) so CEFR-aware models can use it
+        if "cefr_level" not in df_revlogs.columns:
+            df_revlogs["cefr_level"] = 0
+        df_revlogs["cefr_level"] = df_revlogs["cefr_level"].fillna(0).astype(int)
 
         # Create initial features
         dataset = create_features(df_revlogs, config=self.config)

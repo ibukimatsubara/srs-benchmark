@@ -4,7 +4,7 @@ import sys
 import os
 import pandas as pd
 import numpy as np
-from typing import Optional
+from typing import Optional, Any
 from pathlib import Path
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -19,17 +19,11 @@ import warnings
 from models.fsrs_v6 import FSRS6
 from models.fsrs_v6_one_step import FSRS_one_step
 from models.model_factory import create_model
-from models.trainable import TrainableModel
-from reptile_trainer import get_inner_opt, finetune
 from script import sort_jsonl
 import multiprocessing as mp
-import pyarrow.parquet as pq  # type: ignore
 from config import create_parser, Config
-from utils import catch_exceptions, get_bin, rmse_matrix, save_evaluation_file
+from utils import catch_exceptions, rmse_matrix, save_evaluation_file
 from data_loader import UserDataLoader
-from models.rmse_bins_exploit import RMSEBinsExploit
-from models.sm2 import sm2
-from models.ebisu import Ebisu
 
 parser = create_parser()
 args, _ = parser.parse_known_args()
@@ -50,7 +44,7 @@ tqdm.pandas()
 
 
 def batch_process_wrapper(
-    model: TrainableModel, batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
+    model: Any, batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
 ) -> dict[str, Tensor]:
     sequences, delta_ts, labels, seq_lens, weights = batch
     real_batch_size = seq_lens.shape[0]
@@ -65,7 +59,7 @@ class Trainer:
 
     def __init__(
         self,
-        model: TrainableModel,
+        model: Any,
         train_set: pd.DataFrame,
         test_set: Optional[pd.DataFrame],
         batch_size: int = 256,
@@ -206,7 +200,7 @@ class Trainer:
 
 
 class Collection:
-    def __init__(self, model: TrainableModel) -> None:
+    def __init__(self, model: Any) -> None:
         self.model = model.to(device=config.device)
         self.model.eval()
 
@@ -228,134 +222,6 @@ class Collection:
                     difficulties.extend(result["difficulties"].cpu().tolist())
 
         return retentions, stabilities, difficulties
-
-
-def process_untrainable(
-    user_id: int, dataset: pd.DataFrame
-) -> tuple[dict, Optional[dict]]:
-    """Process untrainable models (SM2, Ebisu-v2)."""
-    testsets = []
-    tscv = TimeSeriesSplit(n_splits=config.n_splits)
-    for _, test_index in tscv.split(dataset):
-        test_set = dataset.iloc[test_index].copy()
-        testsets.append(test_set)
-
-    p = []
-    y = []
-    save_tmp = []
-    ebisu = Ebisu()
-
-    for i, testset in enumerate(testsets):
-        if config.model_name == "SM2":
-            testset["stability"] = testset["sequence"].map(lambda x: sm2(x, config))
-            testset["p"] = np.exp(
-                np.log(0.9) * testset["delta_t"] / testset["stability"]
-            )
-        elif config.model_name == "Ebisu-v2":
-            testset["model"] = testset["sequence"].map(ebisu.ebisu_v2)
-            testset["p"] = testset.apply(
-                lambda x: ebisu.predict(x["model"], x["delta_t"]),
-                axis=1,
-            )
-
-        p.extend(testset["p"].tolist())
-        y.extend(testset["y"].tolist())
-        save_tmp.append(testset)
-    save_tmp_df = pd.concat(save_tmp)
-    save_evaluation_file(user_id, save_tmp_df, config)
-    stats, raw = evaluate(y, p, save_tmp_df, config.get_evaluation_file_name(), user_id)
-    return stats, raw
-
-
-def baseline(user_id: int, dataset: pd.DataFrame) -> tuple[dict, Optional[dict]]:
-    testsets = []
-    avg_ps = []
-    tscv = TimeSeriesSplit(n_splits=config.n_splits)
-    for train_index, test_index in tscv.split(dataset):
-        test_set = dataset.iloc[test_index].copy()
-        testsets.append(test_set)
-        train_set = dataset.iloc[train_index].copy()
-        avg_ps.append(train_set["y"].mean())
-
-    p = []
-    y = []
-    save_tmp = []
-
-    for avg_p, testset in zip(avg_ps, testsets):
-        testset["p"] = avg_p
-        p.extend([avg_p] * testset.shape[0])
-        y.extend(testset["y"].tolist())
-        save_tmp.append(testset)
-    save_tmp = pd.concat(save_tmp)
-    stats, raw = evaluate(y, p, save_tmp, config.model_name, user_id)
-    return stats, raw
-
-
-def rmse_bins_exploit(
-    user_id: int, dataset: pd.DataFrame
-) -> tuple[dict, Optional[dict]]:
-    """Process RMSE-BINS-EXPLOIT model."""
-    tscv = TimeSeriesSplit(n_splits=config.n_splits)
-    save_tmp = []
-    first_test_index = int(1e9)
-    for _, test_index in tscv.split(dataset):
-        first_test_index = min(first_test_index, test_index.min())
-        test_set = dataset.iloc[test_index].copy()
-        save_tmp.append(test_set)
-
-    p = []
-    y = []
-    model = RMSEBinsExploit()
-    for i in range(len(dataset)):
-        row = dataset.iloc[i].copy()
-        bin = get_bin(row)
-        if i >= first_test_index:
-            pred = model.predict(bin)
-            p.append(pred)
-            y.append(row["y"])
-            model.adapt(bin, row["y"])
-
-    save_tmp_df = pd.concat(save_tmp)
-    save_tmp_df["p"] = p
-    save_evaluation_file(user_id, save_tmp_df, config)
-    stats, raw = evaluate(y, p, save_tmp_df, config.model_name, user_id)
-    return stats, raw
-
-
-def moving_avg(user_id: int, dataset: pd.DataFrame) -> tuple[dict, Optional[dict]]:
-    tscv = TimeSeriesSplit(n_splits=config.n_splits)
-    save_tmp = []
-
-    # Get the first index of the reviews that the benchmark uses
-    first_test_index = int(1e9)
-    for _, test_index in tscv.split(dataset):
-        first_test_index = min(first_test_index, test_index.min())
-        test_set = dataset.iloc[test_index].copy()
-        save_tmp.append(test_set)
-
-    x = 1.2
-    w = 0.3
-    p = []
-    y = []
-
-    for i in range(len(dataset)):
-        row = dataset.iloc[i].copy()
-        y_pred = 1 / (np.e**-x + 1)
-        if i >= first_test_index:
-            p.append(y_pred)
-            y.append(row["y"])
-
-        # gradient step
-        if row["y"] == 1:
-            x += w / (np.e**x + 1)
-        else:
-            x -= w * (np.e**x) / (np.e**x + 1)
-
-    save_tmp_df = pd.concat(save_tmp)
-    save_tmp_df["p"] = p
-    save_evaluation_file(user_id, save_tmp_df, config)
-    stats, raw = evaluate(y, p, save_tmp_df, config.get_evaluation_file_name(), user_id)
-    return stats, raw
 
 
 def fsrs_one_step(user_id: int, dataset: pd.DataFrame) -> tuple[dict, Optional[dict]]:
@@ -429,20 +295,13 @@ def fsrs_one_step(user_id: int, dataset: pd.DataFrame) -> tuple[dict, Optional[d
 def process(user_id: int) -> tuple[dict, Optional[dict]]:
     """Main processing function for all models."""
     plt.close("all")
+    tqdm.write(f"[{user_id}] start")
 
     # Load data once for all models
     data_loader = UserDataLoader(config)
     dataset = data_loader.load_user_data(user_id)
+    tqdm.write(f"[{user_id}] loaded dataset rows={len(dataset)}")
 
-    # Handle special cases
-    if config.model_name == "SM2" or config.model_name.startswith("Ebisu"):
-        return process_untrainable(user_id, dataset)
-    if config.model_name == "AVG":
-        return baseline(user_id, dataset)
-    if config.model_name == "RMSE-BINS-EXPLOIT":
-        return rmse_bins_exploit(user_id, dataset)
-    if config.model_name == "MOVING-AVG":
-        return moving_avg(user_id, dataset)
     if config.model_name == "FSRS-6-one-step":
         return fsrs_one_step(user_id, dataset)
 
@@ -472,6 +331,9 @@ def process(user_id: int) -> tuple[dict, Optional[dict]]:
         if config.no_train_same_day:
             train_set = train_set[train_set["elapsed_days"] > 0].copy()
 
+        tqdm.write(
+            f"[{user_id}] split {split_i+1}/{config.n_splits} train={len(train_set)} test={len(test_set)}"
+        )
         testsets.append(test_set)
         partition_weights = {}
         for partition in train_set["partition"].unique():
@@ -490,29 +352,19 @@ def process(user_id: int) -> tuple[dict, Optional[dict]]:
                     partition_weights[partition] = model.state_dict()
                     continue
 
-                if config.model_name == "LSTM":
-                    model = model.to(config.device)
-                    inner_opt = get_inner_opt(
-                        model.parameters(),
-                        path=f"./pretrain/{config.get_optimizer_file_name()}_pretrain.pth",
-                    )
-                    trained_model = finetune(
-                        train_partition, model, inner_opt.state_dict()
-                    )
-                    partition_weights[partition] = copy.deepcopy(
-                        trained_model.state_dict()
-                    )
+                trainer = Trainer(
+                    model=model,
+                    train_set=train_partition,
+                    test_set=None,
+                    batch_size=config.batch_size,
+                )
+                if config.only_S0:
+                    partition_weights[partition] = trainer.model.state_dict()
                 else:
-                    trainer = Trainer(
-                        model=model,
-                        train_set=train_partition,
-                        test_set=None,
-                        batch_size=config.batch_size,
-                    )
-                    if config.only_S0:
-                        partition_weights[partition] = trainer.model.state_dict()
-                    else:
-                        partition_weights[partition] = trainer.train()
+                    partition_weights[partition] = trainer.train()
+                tqdm.write(
+                    f"[{user_id}] trained partition={partition} split={split_i+1} rows={len(train_partition)}"
+                )
             except Exception as e:
                 if str(e).endswith("inadequate."):
                     if config.verbose_inadequate_data:
@@ -595,7 +447,7 @@ def evaluate(y, p, df, file_name, user_id, w_list=None):
             "ICI": round(ici, 6),
             "AUC": auc,
         },
-        "user": int(user_id),
+        "user": hash(user_id) & 0x7FFFFFFF,  # Convert to positive int hash
         "size": len(y),
     }
     if (
@@ -612,7 +464,7 @@ def evaluate(y, p, df, file_name, user_id, w_list=None):
         torch.save(w_list[-1], f"weights/{file_name}/{user_id}.pth")
     if config.save_raw_output:
         raw = {
-            "user": int(user_id),
+            "user": hash(user_id) & 0x7FFFFFFF,  # Convert to positive int hash
             "p": list(map(lambda x: round(x, 4), p)),
             "y": list(map(int, y)),
         }
@@ -624,7 +476,6 @@ def evaluate(y, p, df, file_name, user_id, w_list=None):
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     unprocessed_users = []
-    dataset = pq.ParquetDataset(config.data_path / "revlogs")
     Path(f"evaluation/{config.get_evaluation_file_name()}").mkdir(
         parents=True, exist_ok=True
     )
@@ -641,10 +492,12 @@ if __name__ == "__main__":
     if config.save_raw_output and raw_file.exists():
         sort_jsonl(raw_file)
 
-    for user_id in dataset.partitioning.dictionaries[0]:
-        if user_id.as_py() in processed_user:
-            continue
-        unprocessed_users.append(user_id.as_py())
+    # List user ids from directory names (fast, matches script.py approach)
+    user_dirs = list((config.data_path / "revlogs").glob("user_id=*"))
+    for user_dir in user_dirs:
+        user_id = user_dir.name.replace("user_id=", "")
+        if user_id not in processed_user:
+            unprocessed_users.append(user_id)
 
     unprocessed_users.sort()
 

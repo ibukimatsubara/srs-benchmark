@@ -49,6 +49,17 @@ class BaseFeatureEngineer(ABC):
         """
         Common preprocessing steps shared by all models
         """
+        # Ensure day_offset exists; fallback to cumulative elapsed time per card
+        if "day_offset" not in df.columns:
+            if "elapsed_days" in df.columns:
+                # Replace -1 (first review) with 0 before cumsum
+                elapsed_adjusted = df["elapsed_days"].replace(-1, 0)
+                df["day_offset"] = elapsed_adjusted.groupby(df["card_id"]).cumsum()
+            elif "delta_t" in df.columns:
+                df["day_offset"] = df.groupby("card_id")["delta_t"].cumsum().fillna(0)
+            else:
+                df["day_offset"] = 0
+
         # Add review sequence number
         df["review_th"] = range(1, df.shape[0] + 1)
         df["nth_today"] = df.groupby("day_offset").cumcount() + 1
@@ -79,17 +90,19 @@ class BaseFeatureEngineer(ABC):
         """
         Process time interval related fields
         """
-        if (
-            "delta_t" not in df.columns
-            and "elapsed_days" in df.columns
-            and "elapsed_seconds" in df.columns
-        ):
-            df["delta_t"] = df["elapsed_days"]
-            if self.config.use_secs_intervals:
+        if "delta_t" not in df.columns:
+            if "elapsed_seconds" in df.columns and self.config.use_secs_intervals:
+                df["delta_t"] = df["elapsed_seconds"] / 86400
+            elif "elapsed_days" in df.columns:
+                df["delta_t"] = df["elapsed_days"]
+
+            # Handle elapsed_seconds separately if available
+            if "elapsed_seconds" in df.columns and self.config.use_secs_intervals:
                 df["delta_t_secs"] = df["elapsed_seconds"] / 86400
                 df["delta_t_secs"] = df["delta_t_secs"].map(lambda x: max(0, x))
 
-        df["delta_t"] = df["delta_t"].map(lambda x: max(0, x))
+        if "delta_t" in df.columns:
+            df["delta_t"] = df["delta_t"].map(lambda x: max(0, x))
         return df
 
     def _compute_histories(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -235,9 +248,11 @@ class BaseFeatureEngineer(ABC):
         """
         Handle outliers and non-continuous rows
         """
+        # Filter out rows with empty first_rating before applying remove_outliers
+        i2_valid = df[(df["i"] == 2) & (df["first_rating"] != "")]
 
         filtered_dataset = (
-            df[df["i"] == 2]
+            i2_valid
             .groupby(by=["first_rating"], as_index=False, group_keys=False)[df.columns]
             .apply(remove_outliers)
         )

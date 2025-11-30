@@ -1,57 +1,15 @@
 from .base import BaseFeatureEngineer
 from .fsrs_engineer import FSRSFeatureEngineer
 from .fsrs_one_step_engineer import FSRSOneStepFeatureEngineer
-from .lstm_engineer import LSTMFeatureEngineer
-from .dash_engineer import (
-    DashFeatureEngineer,
-    DashMCMFeatureEngineer,
-    DashACTRFeatureEngineer,
-)
-from .neural_engineer import (
-    GRUPFeatureEngineer,
-    HLRFeatureEngineer,
-    ACTRFeatureEngineer,
-    NN17FeatureEngineer,
-)
-from .memory_engineer import SM2FeatureEngineer, EbisuFeatureEngineer
-from .simple_engineer import AVGFeatureEngineer, RMSEBinsExploitFeatureEngineer
+from .fsrs_cefr_engineer import FSRSCEFRFeatureEngineer
 from config import Config, ModelName
 from typing import Type, get_args
 
 
 FEATURE_ENGINEER_REGISTRY: dict[ModelName, Type[BaseFeatureEngineer]] = {
-    # FSRS family and similar models that use standard tensor format
-    "FSRSv1": FSRSFeatureEngineer,
-    "FSRSv2": FSRSFeatureEngineer,
-    "FSRSv3": FSRSFeatureEngineer,
-    "FSRSv4": FSRSFeatureEngineer,
-    "FSRS-4.5": FSRSFeatureEngineer,
-    "FSRS-5": FSRSFeatureEngineer,
     "FSRS-6": FSRSFeatureEngineer,
+    "FSRS-6-cefr": FSRSCEFRFeatureEngineer,
     "FSRS-6-one-step": FSRSOneStepFeatureEngineer,
-    "RNN": FSRSFeatureEngineer,
-    "GRU": FSRSFeatureEngineer,
-    "Transformer": FSRSFeatureEngineer,
-    "SM2-trainable": FSRSFeatureEngineer,
-    "Anki": FSRSFeatureEngineer,
-    "90%": FSRSFeatureEngineer,
-    # Specialized models
-    "LSTM": LSTMFeatureEngineer,
-    "GRU-P": GRUPFeatureEngineer,
-    "HLR": HLRFeatureEngineer,
-    "ACT-R": ACTRFeatureEngineer,
-    "NN-17": NN17FeatureEngineer,
-    # DASH variants
-    "DASH": DashFeatureEngineer,
-    "DASH[MCM]": DashMCMFeatureEngineer,
-    "DASH[ACT-R]": DashACTRFeatureEngineer,
-    # Memory models that don't use tensors
-    "SM2": SM2FeatureEngineer,
-    "Ebisu-v2": EbisuFeatureEngineer,
-    # Simple models that only need basic features
-    "AVG": AVGFeatureEngineer,
-    "MOVING-AVG": AVGFeatureEngineer,
-    "RMSE-BINS-EXPLOIT": RMSEBinsExploitFeatureEngineer,
 }
 
 

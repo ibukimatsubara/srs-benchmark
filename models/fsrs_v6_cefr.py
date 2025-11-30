@@ -126,17 +126,12 @@ class FSRS6CEFR(FSRS6):
             config: 設定オブジェクト
             w: 初期パラメータ（Noneの場合はinit_wを使用）
         """
-        # FSRS6の初期化をスキップしてFSRS5から直接継承
-        nn.Module.__init__(self)
-        self.config = config
+        # FSRS6 の初期化を利用しつつ 27 パラメータを渡す
+        super().__init__(config, w if w is not None else self.init_w)
 
-        if w is None:
-            w = self.init_w
-
-        # 27パラメータに対応
-        self.w = nn.Parameter(torch.tensor(w, dtype=torch.float32))
-        self.init_w_tensor = self.w.data.clone().to(self.config.device)
+        # CEFR 専用のクリッパーに差し替え、初期テンソルも更新
         self.clipper = FSRS6CEFRParameterClipper(config)
+        self.init_w_tensor = self.w.data.clone().to(self.config.device)
         self.gamma = 1  # L2正則化係数
 
     def init_d_with_cefr(self, rating: Tensor, cefr_level: Tensor) -> Tensor:
