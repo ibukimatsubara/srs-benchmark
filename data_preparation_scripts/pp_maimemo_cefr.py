@@ -120,10 +120,21 @@ def main(data_path, chunk_size=100_000):
         for _, row in chunk_data.iterrows():
             user = row['u']
             word = row['w']
+
+            if pd.isna(user) or pd.isna(word):
+                progress_bar.update(1)
+                continue
+
+            user = str(user)
+            word = str(word)
+
             item_id = row['i']
             delta_t = row['delta_t']
             rating_value = row['r']
             t_history = row['t_history'].split(',') if pd.notna(row['t_history']) else []
+            if t_history:
+                t_history[0] = -1
+
             r_history = row['r_history'].split(',') if pd.notna(row['r_history']) else []
 
             if len(sample_data) < 2:
@@ -201,8 +212,6 @@ if __name__ == "__main__":
     data_path = args.data
 
     main(data_path)
-
-
 
 
 
