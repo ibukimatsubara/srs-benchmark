@@ -97,6 +97,25 @@ user2id={}
 review_data = {}
 
 
+def flush_review_data(output_dir: Path):
+    """BuffersをParquetへ追記し、メモリを解放する"""
+    if not review_data:
+        return
+
+    for user_id, df in review_data.items():
+        user_dir = output_dir / f"user_id={user_id}"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = user_dir / "data.parquet"
+
+        if parquet_path.exists():
+            existing_df = pd.read_parquet(parquet_path)
+            df = pd.concat([existing_df, df], ignore_index=True)
+
+        df.to_parquet(parquet_path)
+
+    review_data.clear()
+
+
 def main(data_path, chunk_size=500_000):
     print("=" * 70)
     print("MaiMemo Data Processing with CEFR")
@@ -115,6 +134,9 @@ def main(data_path, chunk_size=500_000):
 
     print("[3/4] Processing entries...")
     progress_bar = tqdm(desc="      Progress", unit="row")
+    output_dir = Path("maimemo_parquet_cefr/revlogs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     for chunk_data in load_maimemo_tsv(data_path, chunk_size):
         total_entries += len(chunk_data)
         for _, row in chunk_data.iterrows():
@@ -179,6 +201,9 @@ def main(data_path, chunk_size=500_000):
 
             progress_bar.update(1)
 
+        # チャンク終了時にParquetへ追記してバッファを解放
+        flush_review_data(output_dir)
+
     progress_bar.close()
 
     if not sample_printed:
@@ -189,24 +214,9 @@ def main(data_path, chunk_size=500_000):
     print(f"      ✓ Unique users: {len(user2id):,}")
     print(f"      ✓ Total review records: {sum(len(df) for df in review_data.values()):,}\n")
 
-    # 各user_idごとにreview_dataを保存する処理
     print("[4/4] Saving to Parquet files...")
-    output_dir = Path("maimemo_parquet_cefr/revlogs")
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    for user_id, df in tqdm(review_data.items(), desc="      Saving users"):
-        user_dir = output_dir / f"user_id={user_id}"
-        user_dir.mkdir(parents=True, exist_ok=True)
-        parquet_path = user_dir / "data.parquet"
-
-        if parquet_path.exists():
-            # 既存ファイルがある場合は追記する
-            existing_df = pd.read_parquet(parquet_path)
-            df = pd.concat([existing_df, df], ignore_index=True)
-
-        df.to_parquet(parquet_path)
-
-    print(f"\n      ✓ Saved {len(review_data):,} user folders to {output_dir}/")
+    flush_review_data(output_dir)
+    print(f"\n      ✓ Saved user folders to {output_dir}/")
     print("\n" + "=" * 70)
     print("✅ Processing completed successfully!")
     print("=" * 70)
