@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-MaiMemoデータにCEFRレベルを付与してParquet形式で保存
+MaiMemoデータにCEFRレベルを付与してParquet形式で保存（履歴展開版）
 
 処理フロー:
 1. opensource_dataset.tsv から読み込み (226M行)
 2. 各単語にWords-CEFR-DatasetからCEFRレベルを取得
-3. rating変換: 0/1 → 1-4 (Anki形式)
-4. Hive形式でParquet保存: maimemo_parquet_cefr/revlogs/user_id=xxx/data.parquet
+3. 履歴を展開: t_history/r_historyから全レビューを生成
+4. rating変換: 0/1 → 1/3 (Anki形式)
+5. Hive形式でParquet保存: maimemo_parquet_cefr/revlogs/user_id=xxx/data.parquet
 
 出力カラム:
 - card_id: ユーザー内での単語ID (0から連番)
-- elapsed_days: 前回復習からの経過日数
-- rating: 1-4 (1=Again, 2=Hard, 3=Good, 4=Easy)
+- elapsed_days: 前回復習からの経過日数 (-1=初回レビュー)
+- rating: 1 or 3 (1=Again, 3=Good)
 - word: 単語
 - cefr_level: 0-6 (0=Not Found, 1=A1, ..., 6=C2)
+
+注意: 履歴展開により、出力レコード数は入力の約10倍になります。
 """
 import pandas as pd
 import sqlite3
@@ -22,9 +25,9 @@ from tqdm.auto import tqdm
 from collections import defaultdict
 
 # パス設定
-MAIMEMO_TSV = Path("/home/iv/srs_research/maimemo_datasets/opensource_dataset.tsv")
-CEFR_DB = Path("/home/iv/srs_research/Words-CEFR-Dataset/word_cefr_minified.db")
-OUTPUT_DIR = Path("/home/iv/srs_research/maimemo_parquet_cefr/revlogs")
+MAIMEMO_TSV = Path("maimemo_datasets/opensource_dataset.tsv")
+CEFR_DB = Path("data_preparation_scripts/word_cefr_minified.db")
+OUTPUT_DIR = Path("maimemo_parquet_cefr/revlogs")
 
 # 処理設定
 CHUNK_SIZE = 1_000_000  # 100万行ずつ処理
@@ -91,37 +94,98 @@ def convert_rating(r):
     return 1 if r == 0 else 3
 
 
-def process_user_data(user_df, word_to_cefr):
+def parse_history(history_str):
+    """Parse comma-separated history string to list of integers."""
+    if pd.isna(history_str) or history_str == "" or history_str == "0":
+        return []
+    return [int(x) for x in str(history_str).split(",")]
+
+
+def expand_reviews(row, card_id, word, cefr_level):
     """
-    1ユーザーのデータを処理
+    Expand a single MaiMemo row into multiple Anki review records with CEFR info.
+
+    Returns list of dicts with keys: card_id, elapsed_days, rating, word, cefr_level
+    """
+    t_hist = parse_history(row["t_history"])
+    r_hist = parse_history(row["r_history"])
+
+    reviews = []
+
+    # Expand historical reviews
+    for idx, r_val in enumerate(r_hist):
+        if idx == 0:
+            elapsed = -1
+        else:
+            elapsed = t_hist[idx - 1]
+
+        rating = convert_rating(r_val)
+
+        reviews.append({
+            "card_id": card_id,
+            "elapsed_days": elapsed,
+            "rating": rating,
+            "word": word,
+            "cefr_level": cefr_level
+        })
+
+    # Add current review
+    rating = convert_rating(row["r"])
+    reviews.append({
+        "card_id": card_id,
+        "elapsed_days": row["delta_t"],
+        "rating": rating,
+        "word": word,
+        "cefr_level": cefr_level
+    })
+
+    return reviews
+
+
+def process_user_data(user_df, word_to_cefr, existing_word_to_card_id=None):
+    """
+    1ユーザーのデータを処理（履歴を展開）
 
     Args:
         user_df: ユーザーの全復習記録
         word_to_cefr: 単語→CEFRマッピング
+        existing_word_to_card_id: 既存のword→card_idマッピング（既存ファイルから復元）
 
     Returns:
-        DataFrame: 処理済みデータ
+        DataFrame: 処理済みデータ（履歴展開済み）
     """
     # 単語を文字列に変換（NaNや数値を処理）
     user_df['w_str'] = user_df['w'].fillna('UNKNOWN').astype(str)
 
-    # 単語ごとにcard_idを割り当て
-    unique_words = user_df['w_str'].unique()
-    word_to_card_id = {word: idx for idx, word in enumerate(unique_words)}
+    # 既存マッピングがあれば使用、なければ新規作成
+    if existing_word_to_card_id is None:
+        word_to_card_id = {}
+    else:
+        word_to_card_id = existing_word_to_card_id.copy()
 
-    # データ変換
-    processed = []
+    # 新しい単語にcard_idを割り当て
+    next_card_id = max(word_to_card_id.values()) + 1 if word_to_card_id else 0
+    for word in user_df['w_str'].unique():
+        if word not in word_to_card_id:
+            word_to_card_id[word] = next_card_id
+            next_card_id += 1
+
+    # 全レビューを展開
+    all_reviews = []
     for _, row in user_df.iterrows():
         word = row['w_str']
-        processed.append({
-            'card_id': word_to_card_id[word],
-            'elapsed_days': int(row['delta_t']),
-            'rating': convert_rating(int(row['r'])),
-            'word': word,
-            'cefr_level': word_to_cefr.get(word.lower(), 0)  # 0 = Not Found
-        })
+        card_id = word_to_card_id[word]
+        cefr_level = word_to_cefr.get(word.lower(), 0)  # 0 = Not Found
 
-    return pd.DataFrame(processed)
+        # 履歴を展開（複数のレビューレコードを生成）
+        reviews = expand_reviews(row, card_id, word, cefr_level)
+        all_reviews.extend(reviews)
+
+    # DataFrameに変換してcard_idでソート
+    df = pd.DataFrame(all_reviews)
+    df = df.sort_values(by=["card_id"]).reset_index(drop=True)
+
+    return df
 
 
 def process_tsv_to_parquet(word_to_cefr):
@@ -144,7 +208,7 @@ def process_tsv_to_parquet(word_to_cefr):
             MAIMEMO_TSV,
             sep='\t',
             chunksize=CHUNK_SIZE,
-            usecols=['u', 'w', 'delta_t', 'r'],  # 必要なカラムのみ
+            usecols=['u', 'w', 'i', 't_history', 'r_history', 'delta_t', 'r'],  # 履歴含む全カラム
         ):
             total_rows += len(chunk)
             pbar.update(len(chunk))
@@ -175,19 +239,43 @@ def process_tsv_to_parquet(word_to_cefr):
 def save_users_to_parquet(user_data_buffer, word_to_cefr):
     """
     バッファに溜まったユーザーデータをParquetに保存
+    既存ファイルがあれば読み込んでマージし、card_idの整合性を保つ
     """
     for user_id, user_dfs in user_data_buffer.items():
-        # ユーザーの全データを結合
-        user_df = pd.concat(user_dfs, ignore_index=True)
-
-        # データ処理
-        processed_df = process_user_data(user_df, word_to_cefr)
-
-        # Hive形式で保存
         user_dir = OUTPUT_DIR / f"user_id={user_id}"
         user_dir.mkdir(parents=True, exist_ok=True)
-
         parquet_path = user_dir / "data.parquet"
+
+        # 既存データがあれば読み込んで、word→card_idマッピングを復元
+        existing_word_to_card_id = None
+        if parquet_path.exists():
+            existing_df = pd.read_parquet(parquet_path)
+            # 既存のword→card_idマッピングを復元
+            existing_word_to_card_id = (
+                existing_df[['word', 'card_id']]
+                .drop_duplicates()
+                .set_index('word')['card_id']
+                .to_dict()
+            )
+            # 既存データを先頭に追加（raw dataとして）
+            # 注意: existing_dfは既に処理済みなので、元の形式に戻す必要がある
+            # ここでは既存の処理済みデータは保持せず、新データのみを処理する方針
+            # （既存データは既に展開済みのため、再展開すると重複する）
+
+        # 新しいチャンクのデータを結合
+        user_df = pd.concat(user_dfs, ignore_index=True)
+
+        # 統一されたcard_idで処理
+        processed_df = process_user_data(user_df, word_to_cefr, existing_word_to_card_id)
+
+        # 既存データがあれば結合
+        if parquet_path.exists():
+            existing_df = pd.read_parquet(parquet_path)
+            processed_df = pd.concat([existing_df, processed_df], ignore_index=True)
+            # card_idでソート
+            processed_df = processed_df.sort_values(by=["card_id"]).reset_index(drop=True)
+
+        # Hive形式で保存
         processed_df.to_parquet(parquet_path, index=False)
 
 
