@@ -129,13 +129,16 @@ def main(data_path, chunk_size=500_000):
             word = str(word)
 
             item_id = row['i']
-            delta_t = row['delta_t']
-            rating_value = row['r']
+            delta_t = float(row['delta_t']) if pd.notna(row['delta_t']) else 0.0
+            rating_value = int(float(row['r'])) if pd.notna(row['r']) else 0
+
             t_history = row['t_history'].split(',') if pd.notna(row['t_history']) else []
+            t_history = [float(t) for t in t_history if t != '']
             if t_history:
-                t_history[0] = -1
+                t_history[0] = -1.0
 
             r_history = row['r_history'].split(',') if pd.notna(row['r_history']) else []
+            r_history = [int(float(r)) for r in r_history if r != '']
 
             if len(sample_data) < 2:
                 sample_data.append({
