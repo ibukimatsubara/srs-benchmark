@@ -103,7 +103,7 @@ def flush_review_data(output_dir: Path):
         return
 
     for user_id, df in review_data.items():
-        user_dir = output_dir / f"user_id={user_id}"
+        user_dir = output_dir / f"user_id={user_id:06d}"
         user_dir.mkdir(parents=True, exist_ok=True)
         parquet_path = user_dir / "data.parquet"
 
