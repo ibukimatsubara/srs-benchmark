@@ -68,21 +68,10 @@ def word_to_cefr(word):
     return mapping.get(word.lower(), 0)  # 0 = Not Found
 
 
-def load_maimemo_tsv(data_path):
-    df = pd.read_csv(data_path, sep='\t')
-    data = []
-    for _, row in df.iterrows():
-        entry = {
-            'u': row['u'],
-            'w': row['w'],
-            'i': row['i'],
-            'delta_t': row['delta_t'],
-            'r': row['r'],
-            't_history': row['t_history'].split(',') if pd.notna(row['t_history']) else [],
-            'r_history': row['r_history'].split(',') if pd.notna(row['r_history']) else []
-        }
-        data.append(entry)
-    return data
+def load_maimemo_tsv(data_path, chunk_size=100_000):
+    """TSVをチャンクサイズごとに読み込むジェネレータ"""
+    for chunk in pd.read_csv(data_path, sep='\t', chunksize=chunk_size):
+        yield chunk
     # tsvを読み込む
 
 def convert_rating(r):
@@ -108,7 +97,7 @@ user2id={}
 review_data = {}
 
 
-def main(data_path):
+def main(data_path, chunk_size=100_000):
     print("=" * 70)
     print("MaiMemo Data Processing with CEFR")
     print("=" * 70)
@@ -119,38 +108,69 @@ def main(data_path):
     cefr_mapping = load_cefr_mapping()
     print()
 
-    print("[2/4] Loading MaiMemo TSV...")
-    data = load_maimemo_tsv(data_path)
-    print(f"      ✓ Total entries: {len(data):,}")
-    print(f"      Sample data: {data[:2]}\n")
+    print(f"[2/4] Loading MaiMemo TSV in chunks of {chunk_size:,} rows...")
+    total_entries = 0
+    sample_data = []
+    sample_printed = False
 
     print("[3/4] Processing entries...")
-    for entry in tqdm(data, desc="      Progress"):
-        word = entry['w']
-        if word not in word2id:
-            word2id[word] = len(word2id) + 1
-        if entry['u'] not in user2id:
-            user2id[entry['u']] = len(user2id) + 1
+    progress_bar = tqdm(desc="      Progress", unit="row")
+    for chunk_data in load_maimemo_tsv(data_path, chunk_size):
+        total_entries += len(chunk_data)
+        for _, row in chunk_data.iterrows():
+            user = row['u']
+            word = row['w']
+            item_id = row['i']
+            delta_t = row['delta_t']
+            rating_value = row['r']
+            t_history = row['t_history'].split(',') if pd.notna(row['t_history']) else []
+            r_history = row['r_history'].split(',') if pd.notna(row['r_history']) else []
 
-        word_id = word2id[word]
-        user_id = user2id[entry['u']]
-        cefr_level = cefr_mapping.get(word.lower(), 0)  # 直接辞書参照
+            if len(sample_data) < 2:
+                sample_data.append({
+                    'u': user,
+                    'w': word,
+                    'i': item_id,
+                    'delta_t': delta_t,
+                    'r': rating_value,
+                    't_history': t_history.copy(),
+                    'r_history': r_history.copy()
+                })
+            elif not sample_printed:
+                print(f"      ✓ Sample data: {sample_data}\n")
+                sample_printed = True
 
-        entry['t_history'].append(entry['delta_t'])
-        entry['r_history'].append(entry['r'])
+            if word not in word2id:
+                word2id[word] = len(word2id) + 1
+            if user not in user2id:
+                user2id[user] = len(user2id) + 1
 
-        review_rows = pd.DataFrame({
-            'card_id': [word_id]*len(entry['r_history']),
-            'elapsed_days': entry['t_history'],
-            'rating': [convert_rating(r) for r in entry['r_history']],
-            'cefr_level': [cefr_level]*len(entry['r_history'])
-        })
-        if user_id not in review_data:
-            review_data[user_id] = review_rows
-        else:
-            review_data[user_id] = pd.concat([review_data[user_id], review_rows], ignore_index=True)
+            word_id = word2id[word]
+            user_id = user2id[user]
+            cefr_level = cefr_mapping.get(word.lower(), 0)  # 直接辞書参照
 
-    print(f"\n      ✓ Processed {len(data):,} entries")
+            t_history.append(delta_t)
+            r_history.append(rating_value)
+
+            review_rows = pd.DataFrame({
+                'card_id': [word_id]*len(r_history),
+                'elapsed_days': t_history,
+                'rating': [convert_rating(r) for r in r_history],
+                'cefr_level': [cefr_level]*len(r_history)
+            })
+            if user_id not in review_data:
+                review_data[user_id] = review_rows
+            else:
+                review_data[user_id] = pd.concat([review_data[user_id], review_rows], ignore_index=True)
+
+            progress_bar.update(1)
+
+    progress_bar.close()
+
+    if not sample_printed:
+        print(f"      ✓ Sample data: {sample_data}\n")
+
+    print(f"\n      ✓ Processed {total_entries:,} entries")
     print(f"      ✓ Unique words: {len(word2id):,}")
     print(f"      ✓ Unique users: {len(user2id):,}")
     print(f"      ✓ Total review records: {sum(len(df) for df in review_data.values()):,}\n")
@@ -181,10 +201,6 @@ if __name__ == "__main__":
     data_path = args.data
 
     main(data_path)
-
-
-
-
 
 
 
