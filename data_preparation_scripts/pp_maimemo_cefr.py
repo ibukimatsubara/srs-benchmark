@@ -68,7 +68,7 @@ def word_to_cefr(word):
     return mapping.get(word.lower(), 0)  # 0 = Not Found
 
 
-def load_maimemo_tsv(data_path, chunk_size=100_000):
+def load_maimemo_tsv(data_path, chunk_size=5000_000):
     """TSVをチャンクサイズごとに読み込むジェネレータ"""
     for chunk in pd.read_csv(data_path, sep='\t', chunksize=chunk_size):
         yield chunk
@@ -97,7 +97,7 @@ user2id={}
 review_data = {}
 
 
-def main(data_path, chunk_size=100_000):
+def main(data_path, chunk_size=500_000):
     print("=" * 70)
     print("MaiMemo Data Processing with CEFR")
     print("=" * 70)
@@ -188,13 +188,22 @@ def main(data_path, chunk_size=100_000):
 
     # 各user_idごとにreview_dataを保存する処理
     print("[4/4] Saving to Parquet files...")
-    output_dir = "maimemo_parquet_cefr/revlogs"
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = Path("maimemo_parquet_cefr/revlogs")
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     for user_id, df in tqdm(review_data.items(), desc="      Saving users"):
-        df.to_parquet(f"{output_dir}/{user_id}.parquet")
+        user_dir = output_dir / f"user_id={user_id}"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        parquet_path = user_dir / "data.parquet"
 
-    print(f"\n      ✓ Saved {len(review_data):,} user files to {output_dir}/")
+        if parquet_path.exists():
+            # 既存ファイルがある場合は追記する
+            existing_df = pd.read_parquet(parquet_path)
+            df = pd.concat([existing_df, df], ignore_index=True)
+
+        df.to_parquet(parquet_path)
+
+    print(f"\n      ✓ Saved {len(review_data):,} user folders to {output_dir}/")
     print("\n" + "=" * 70)
     print("✅ Processing completed successfully!")
     print("=" * 70)
@@ -205,14 +214,11 @@ def main(data_path, chunk_size=100_000):
 if __name__ == "__main__":
     # --dataでinput tsvのpath
     import argparse
-    import os
     parser = argparse.ArgumentParser()
     parser.add_argument('--data', type=str, required=True, help='Path to MaiMemo tsv data')
+    parser.add_argument('--chunk-size', type=int, default=500_000, help='Rows per chunk when streaming TSV')
     args = parser.parse_args()
     data_path = args.data
+    chunk_size = args.chunk_size
 
-    main(data_path)
-
-
-
-
+    main(data_path, chunk_size)
