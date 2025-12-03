@@ -14,6 +14,24 @@ This benchmark is designed to assess the predictive accuracy of various algorith
 
 The dataset for the SRS benchmark comes from 10 thousand users who use Anki, a flashcard app. In total, this dataset contains information about ~727 million reviews of flashcards. The full dataset is hosted on Hugging Face Datasets: [open-spaced-repetition/anki-revlogs-10k](https://huggingface.co/datasets/open-spaced-repetition/anki-revlogs-10k).
 
+### MaiMemo → CEFR前処理
+
+`data_preparation_scripts/pp_maimemo_cefr.py` で MaiMemo の TSV を CEFR 付き Parquet へ変換できます。主な処理は以下の通りです。
+
+- SQLite (`data_preparation_scripts/word_cefr_minified.db`) から単語→CEFR レベルをロードし、`word2id` / `user2id` をグローバルに割り当て。
+- `--chunk-size` 行ずつ（デフォルト 500,000）TSV をストリーミングし、`t_history`/`r_history` を展開。初回レビューは `elapsed_days=-1`、MaiMemo の 0/1 レーティングは Anki 形式 (1=Again, 3=Good) に変換。
+- 生成したレビューをユーザー単位の DataFrame に蓄積し、`maimemo_parquet_cefr/revlogs/user_id=<ID>/data.parquet` へ保存。既存ファイルがある場合は読み込んで `pd.concat` し、追記として書き戻します。
+
+実行例:
+
+```
+uv run python data_preparation_scripts/pp_maimemo_cefr.py \
+    --data maimemo_datasets/opensource_dataset.tsv \
+    --chunk-size 750000
+```
+
+大量データを扱う際は、ユーザー単位で TSV を分割して並列実行するとディスク競合を避けつつ高速化できます。
+
 ## Evaluation
 
 ### Data Split
