@@ -19,11 +19,16 @@ import warnings
 from models.fsrs_v6 import FSRS6
 from models.fsrs_v6_one_step import FSRS_one_step
 from models.model_factory import create_model
-from script import sort_jsonl
 import multiprocessing as mp
 from config import create_parser, Config
 from utils import catch_exceptions, rmse_matrix, save_evaluation_file
 from data_loader import UserDataLoader
+
+
+def load_jsonl(file: Path) -> list[dict[str, Any]]:
+    """Read a JSONL file without altering its ordering."""
+    with file.open(encoding="utf-8") as jsonl_file:
+        return [json.loads(line) for line in jsonl_file]
 
 parser = create_parser()
 args, _ = parser.parse_known_args()
@@ -484,13 +489,10 @@ if __name__ == "__main__":
     result_file = Path(f"result/{config.get_evaluation_file_name()}.jsonl")
     raw_file = Path(f"raw/{config.get_evaluation_file_name()}.jsonl")
     if result_file.exists():
-        data = sort_jsonl(result_file)
+        data = load_jsonl(result_file)
         processed_user = set(map(lambda x: x["user"], data))
     else:
         processed_user = set()
-
-    if config.save_raw_output and raw_file.exists():
-        sort_jsonl(raw_file)
 
     # List user ids from directory names (fast, matches script.py approach)
     user_dirs = list((config.data_path / "revlogs").glob("user_id=*"))
@@ -526,7 +528,3 @@ if __name__ == "__main__":
                     pbar.set_description(f"Processed {stats['user']}")
             except Exception as e:
                 tqdm.write(str(e))
-
-    sort_jsonl(result_file)
-    if config.save_raw_output:
-        sort_jsonl(raw_file)
