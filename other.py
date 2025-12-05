@@ -447,7 +447,7 @@ def evaluate(y, p, df, file_name, user_id, w_list=None):
             "ICI": round(ici, 6),
             "AUC": auc,
         },
-        "user": hash(user_id) & 0x7FFFFFFF,  # Convert to positive int hash
+        "user": user_id,
         "size": len(y),
     }
     if (
@@ -464,7 +464,7 @@ def evaluate(y, p, df, file_name, user_id, w_list=None):
         torch.save(w_list[-1], f"weights/{file_name}/{user_id}.pth")
     if config.save_raw_output:
         raw = {
-            "user": hash(user_id) & 0x7FFFFFFF,  # Convert to positive int hash
+            "user": user_id,
             "p": list(map(lambda x: round(x, 4), p)),
             "y": list(map(int, y)),
         }
