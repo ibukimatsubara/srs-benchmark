@@ -67,9 +67,15 @@ if __name__ == "__main__":
     last_checkpoint_users = 0
     last_checkpoint_weights: Optional[dict] = None
 
+    skipped_users = 0
     for idx, user_dir in enumerate(tqdm(user_dirs, desc="Loading users"), start=1):
         user_id = user_dir.name.replace("user_id=", "")
-        df = loader.load_user_data(user_id)
+        try:
+            df = loader.load_user_data(user_id)
+        except ValueError as exc:
+            skipped_users += 1
+            tqdm.write(f"Skipping user {user_id}: {exc}")
+            continue
         frames.append(df)
 
         if idx % CHECKPOINT_INTERVAL == 0:
@@ -86,3 +92,6 @@ if __name__ == "__main__":
         print(f"Saved pretrained weights to {output_path}")
     else:
         train_and_save(config, full_dataset, output_path)
+
+    if skipped_users:
+        print(f"Skipped {skipped_users} users due to insufficient data")
