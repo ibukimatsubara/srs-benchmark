@@ -17,8 +17,14 @@ from trainer import Trainer
 CHECKPOINT_INTERVAL = 1000
 
 
-def train_and_save(config: Config, dataset: pd.DataFrame, path: Path) -> dict:
+def train_and_save(
+    config: Config,
+    dataset: pd.DataFrame,
+    path: Path,
+    learning_rate: float,
+) -> tuple[dict, float]:
     model = create_model(config)
+    model.set_hyperparameters(lr=learning_rate, wd=model.wd, n_epoch=model.n_epoch)
     trainer = Trainer(
         config,
         model=model,
@@ -29,7 +35,7 @@ def train_and_save(config: Config, dataset: pd.DataFrame, path: Path) -> dict:
     weights, loss = trainer.train()
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(weights, path)
-    print(f"Saved pretrained weights to {path} (loss={loss:.6f})")
+    print(f"Saved pretrained weights to {path} (loss={loss:.6f}, lr={learning_rate})")
     return weights, loss
 
 
@@ -41,6 +47,12 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Limit the number of users loaded for pretraining",
+    )
+    parser.add_argument(
+        "--pretrain-lr",
+        type=float,
+        default=1e-3,
+        help="Learning rate to use during pretraining (default: 1e-3)",
     )
     args = parser.parse_args()
     config = Config(args)
@@ -83,14 +95,18 @@ if __name__ == "__main__":
         if idx % CHECKPOINT_INTERVAL == 0:
             dataset = pd.concat(frames, ignore_index=True)
             ckpt_path = checkpoint_dir / f"{output_path.stem}_users{idx}.pth"
-            last_checkpoint_weights, loss = train_and_save(config, dataset, ckpt_path)
+            last_checkpoint_weights, loss = train_and_save(
+                config, dataset, ckpt_path, args.pretrain_lr
+            )
             last_checkpoint_users = idx
             frames.clear()
 
     if frames:
         dataset = pd.concat(frames, ignore_index=True)
         ckpt_path = checkpoint_dir / f"{output_path.stem}_users{len(usable_user_dirs)}.pth"
-        last_checkpoint_weights, loss = train_and_save(config, dataset, ckpt_path)
+        last_checkpoint_weights, loss = train_and_save(
+            config, dataset, ckpt_path, args.pretrain_lr
+        )
         last_checkpoint_users = len(usable_user_dirs)
         frames.clear()
 
@@ -98,7 +114,7 @@ if __name__ == "__main__":
         raise SystemExit("No valid user data available for training.")
 
     full_dataset, _ = load_user_datasets(config, usable_user_dirs)
-    train_and_save(config, full_dataset, output_path)
+    train_and_save(config, full_dataset, output_path, args.pretrain_lr)
 
     if skipped_users:
         print(f"Skipped {skipped_users} users due to insufficient data")
