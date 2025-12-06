@@ -26,11 +26,11 @@ def train_and_save(config: Config, dataset: pd.DataFrame, path: Path) -> dict:
         test_set=None,
         batch_size=config.batch_size,
     )
-    weights = trainer.train()
+    weights, loss = trainer.train()
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(weights, path)
-    print(f"Saved pretrained weights to {path}")
-    return weights
+    print(f"Saved pretrained weights to {path} (loss={loss:.6f})")
+    return weights, loss
 
 
 if __name__ == "__main__":
@@ -60,6 +60,7 @@ if __name__ == "__main__":
         raise SystemExit("No user directories found for pretraining.")
     loader = UserDataLoader(config)
     frames: list[pd.DataFrame] = []
+    usable_user_dirs: list[Path] = []
     output_path = Path(args.output)
     checkpoint_dir = output_path.parent / f"{output_path.stem}_checkpoints"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -77,21 +78,27 @@ if __name__ == "__main__":
             tqdm.write(f"Skipping user {user_id}: {exc}")
             continue
         frames.append(df)
+        usable_user_dirs.append(user_dir)
 
         if idx % CHECKPOINT_INTERVAL == 0:
             dataset = pd.concat(frames, ignore_index=True)
             ckpt_path = checkpoint_dir / f"{output_path.stem}_users{idx}.pth"
-            last_checkpoint_weights = train_and_save(config, dataset, ckpt_path)
+            last_checkpoint_weights, loss = train_and_save(config, dataset, ckpt_path)
             last_checkpoint_users = idx
+            frames.clear()
 
-    total_users = len(frames)
-    full_dataset = pd.concat(frames, ignore_index=True)
+    if frames:
+        dataset = pd.concat(frames, ignore_index=True)
+        ckpt_path = checkpoint_dir / f"{output_path.stem}_users{len(usable_user_dirs)}.pth"
+        last_checkpoint_weights, loss = train_and_save(config, dataset, ckpt_path)
+        last_checkpoint_users = len(usable_user_dirs)
+        frames.clear()
 
-    if total_users == last_checkpoint_users and last_checkpoint_weights is not None:
-        torch.save(last_checkpoint_weights, output_path)
-        print(f"Saved pretrained weights to {output_path}")
-    else:
-        train_and_save(config, full_dataset, output_path)
+    if not usable_user_dirs:
+        raise SystemExit("No valid user data available for training.")
+
+    full_dataset, _ = load_user_datasets(config, usable_user_dirs)
+    train_and_save(config, full_dataset, output_path)
 
     if skipped_users:
         print(f"Skipped {skipped_users} users due to insufficient data")

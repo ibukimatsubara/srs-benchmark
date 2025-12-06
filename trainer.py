@@ -109,7 +109,9 @@ class Trainer:
         if weighted_loss < best_loss:
             best_loss = weighted_loss
             best_w = w
-        return best_w
+        if best_w is None:
+            raise RuntimeError("Training did not produce weights")
+        return best_w, best_loss
 
     def eval(self):
         self.model.eval()

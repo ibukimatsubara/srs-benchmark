@@ -215,7 +215,8 @@ def process(user_id: int) -> tuple[dict, Optional[dict]]:
                 if config.only_S0:
                     partition_weights[partition] = trainer.model.state_dict()
                 else:
-                    partition_weights[partition] = trainer.train()
+                    weights, _ = trainer.train()
+                    partition_weights[partition] = weights
                 tqdm.write(
                     f"[{user_id}] trained partition={partition} split={split_i+1} rows={len(train_partition)}"
                 )
