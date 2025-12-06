@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 import torch
+from typing import Any, Mapping
 
 
 def main() -> None:
@@ -23,10 +24,31 @@ def main() -> None:
 
     state = torch.load(pth, map_location="cpu")
 
-    if isinstance(state, dict) and "w" in state:
-        weights = state["w"]
-    else:
-        raise SystemExit("State dict does not contain key 'w'")
+    def extract_weights(obj: Any):
+        if torch.is_tensor(obj):
+            return obj
+        if isinstance(obj, Mapping):
+            if "w" in obj:
+                return torch.as_tensor(obj["w"])
+            for key in ("model_state_dict", "state_dict"):
+                if key in obj and isinstance(obj[key], Mapping) and "w" in obj[key]:
+                    return torch.as_tensor(obj[key]["w"])
+            for value in obj.values():
+                result = extract_weights(value)
+                if result is not None and result.ndim == 1:
+                    return result
+        if isinstance(obj, (list, tuple)):
+            for item in obj:
+                result = extract_weights(item)
+                if result is not None:
+                    return result
+        return None
+
+    weights_tensor = extract_weights(state)
+    if weights_tensor is None:
+        raise SystemExit("Could not locate parameter vector 'w' in the file")
+
+    weights = weights_tensor.tolist()
 
     weights = torch.as_tensor(weights).tolist()
 
