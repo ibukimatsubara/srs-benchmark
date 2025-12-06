@@ -23,6 +23,7 @@ import multiprocessing as mp
 from config import create_parser, Config
 from utils import catch_exceptions, rmse_matrix, save_evaluation_file
 from data_loader import UserDataLoader
+from trainer import Trainer, batch_process_wrapper
 
 
 def load_jsonl(file: Path) -> list[dict[str, Any]]:
@@ -48,166 +49,13 @@ torch.manual_seed(config.seed)
 tqdm.pandas()
 
 
-def batch_process_wrapper(
-    model: Any, batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
-) -> dict[str, Tensor]:
-    sequences, delta_ts, labels, seq_lens, weights = batch
-    real_batch_size = seq_lens.shape[0]
-    result = {"labels": labels, "weights": weights}
-    outputs = model.batch_process(sequences, delta_ts, seq_lens, real_batch_size)
-    result.update(outputs)
-    return result
-
-
-class Trainer:
-    optimizer: torch.optim.Optimizer
-
-    def __init__(
-        self,
-        model: Any,
-        train_set: pd.DataFrame,
-        test_set: Optional[pd.DataFrame],
-        batch_size: int = 256,
-        max_seq_len: int = 64,
-    ) -> None:
-        self.model = model.to(device=config.device)
-        self.model.initialize_parameters(train_set)
-
-        # Setup optimizer
-        self.optimizer = self.model.get_optimizer(lr=self.model.lr, wd=self.model.wd)
-
-        self.batch_size = batch_size
-        self.max_seq_len = max_seq_len
-        self.n_epoch = self.model.n_epoch
-
-        # Build datasets
-        self.build_dataset(self.model.filter_training_data(train_set), test_set)
-
-        # Setup scheduler
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            self.optimizer, T_max=self.train_data_loader.batch_nums * self.n_epoch
-        )
-
-        self.avg_train_losses: list[float] = []
-        self.avg_eval_losses: list[float] = []
-        self.loss_fn = nn.BCELoss(reduction="none")
-
-    def build_dataset(self, train_set: pd.DataFrame, test_set: Optional[pd.DataFrame]):
-        self.train_set = BatchDataset(
-            train_set.copy(),
-            self.batch_size,
-            max_seq_len=self.max_seq_len,
-            device=config.device,
-        )
-        self.train_data_loader = BatchLoader(self.train_set)
-
-        self.test_set = (
-            []
-            if test_set is None
-            else BatchDataset(
-                test_set.copy(),
-                batch_size=self.batch_size,
-                max_seq_len=self.max_seq_len,
-                device=config.device,
-            )
-        )
-        self.test_data_loader = (
-            [] if test_set is None else BatchLoader(self.test_set, shuffle=False)
-        )
-
-    def train(self):
-        best_loss = np.inf
-        epoch_len = len(self.train_set.y_train)
-
-        for k in range(self.n_epoch):
-            weighted_loss, w = self.eval()
-            if weighted_loss < best_loss:
-                best_loss = weighted_loss
-                best_w = w
-
-            for i, batch in enumerate(self.train_data_loader):
-                self.model.train()
-                self.optimizer.zero_grad()
-                result = batch_process_wrapper(self.model, batch)
-                loss = (
-                    self.loss_fn(result["retentions"], result["labels"])
-                    * result["weights"]
-                ).sum()
-                if "penalty" in result:
-                    loss += result["penalty"] / epoch_len
-                loss.backward()
-
-                # Apply model-specific gradient constraints
-                self.model.apply_gradient_constraints()
-
-                self.optimizer.step()
-                self.scheduler.step()
-
-                # Apply model-specific parameter constraints (clipper)
-                self.model.apply_parameter_clipper()
-
-        weighted_loss, w = self.eval()
-        if weighted_loss < best_loss:
-            best_loss = weighted_loss
-            best_w = w
-        return best_w
-
-    def eval(self):
-        self.model.eval()
-        with torch.no_grad():
-            losses = []
-            self.train_data_loader.shuffle = False
-            for data_loader in (self.train_data_loader, self.test_data_loader):
-                if len(data_loader) == 0:
-                    losses.append(0)
-                    continue
-                loss = 0
-                total = 0
-                epoch_len = len(data_loader.dataset.y_train)
-                for batch in data_loader:
-                    result = batch_process_wrapper(self.model, batch)
-                    loss += (
-                        (
-                            self.loss_fn(result["retentions"], result["labels"])
-                            * result["weights"]
-                        )
-                        .sum()
-                        .detach()
-                        .item()
-                    )
-                    if "penalty" in result:
-                        loss += (result["penalty"] / epoch_len).detach().item()
-                    total += batch[3].shape[0]
-                losses.append(loss / total)
-            self.train_data_loader.shuffle = True
-            self.avg_train_losses.append(losses[0])
-            self.avg_eval_losses.append(losses[1])
-
-            w = self.model.state_dict()
-
-            weighted_loss = (
-                losses[0] * len(self.train_set) + losses[1] * len(self.test_set)
-            ) / (len(self.train_set) + len(self.test_set))
-
-            return weighted_loss, w
-
-    def plot(self):
-        fig = plt.figure()
-        ax = fig.gca()
-        self.avg_train_losses = [x.item() for x in self.avg_train_losses]
-        self.avg_eval_losses = [x.item() for x in self.avg_eval_losses]
-        ax.plot(self.avg_train_losses, label="train")
-        ax.plot(self.avg_eval_losses, label="test")
-        ax.set_xlabel("epoch")
-        ax.set_ylabel("loss")
-        ax.legend()
-        return fig
 
 
 class Collection:
-    def __init__(self, model: Any) -> None:
+    def __init__(self, model: Any, config: Config) -> None:
         self.model = model.to(device=config.device)
         self.model.eval()
+        self._device = config.device
 
     def batch_predict(self, dataset):
         batch_dataset = BatchDataset(
@@ -219,7 +67,7 @@ class Collection:
         difficulties = []
         with torch.no_grad():
             for batch in batch_loader:
-                result = batch_process_wrapper(self.model, batch)
+                result = batch_process_wrapper(self.model, batch, self._device)
                 retentions.extend(result["retentions"].cpu().tolist())
                 if "stabilities" in result:
                     stabilities.extend(result["stabilities"].cpu().tolist())
@@ -274,7 +122,7 @@ def fsrs_one_step(user_id: int, dataset: pd.DataFrame) -> tuple[dict, Optional[d
 
     for i, (w, testset) in enumerate(zip(w_list, testsets)):
         tmp_testset = testset.copy()
-        my_collection = Collection(FSRS6(config, w["0"]))
+        my_collection = Collection(FSRS6(config, w["0"]), config)
         retentions, stabilities, difficulties = my_collection.batch_predict(tmp_testset)
         tmp_testset.loc[:, "p"] = retentions
         if stabilities:
@@ -358,6 +206,7 @@ def process(user_id: int) -> tuple[dict, Optional[dict]]:
                     continue
 
                 trainer = Trainer(
+                    config,
                     model=model,
                     train_set=train_partition,
                     test_set=None,
@@ -392,7 +241,8 @@ def process(user_id: int) -> tuple[dict, Optional[dict]]:
             partition_testset = testset[testset["partition"] == partition].copy()
             weights = w.get(partition, None)
             my_collection = Collection(
-                create_model(config, weights) if weights else create_model(config)
+                create_model(config, weights) if weights else create_model(config),
+                config,
             )
             retentions, stabilities, difficulties = my_collection.batch_predict(
                 partition_testset

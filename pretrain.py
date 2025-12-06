@@ -1,116 +1,88 @@
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Iterable, Optional
+
 import pandas as pd
-from tqdm import tqdm  # type: ignore
 import torch
-from features import create_features
-from models.base import BaseModel
-from models.trainable import TrainableModel
-from other import Trainer
-from config import create_parser, Config
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from models.fsrs_v6 import FSRS6
-from models.gru_p import GRU_P
-from models.rnn import RNN
-from models.transformer import Transformer
-from models.nn_17 import NN_17
+from tqdm.auto import tqdm  # type: ignore
 
-parser = create_parser()
-args, _ = parser.parse_known_args()
-config = Config(args)
+from config import Config, create_parser
+from data_loader import UserDataLoader
+from models.model_factory import create_model
+from trainer import Trainer
 
 
-def process_user(user_id):
-    dataset = pd.read_parquet(
-        config.data_path / "revlogs" / f"{user_id=}",
+CHECKPOINT_INTERVAL = 1000
+
+
+def train_and_save(config: Config, dataset: pd.DataFrame, path: Path) -> dict:
+    model = create_model(config)
+    trainer = Trainer(
+        config,
+        model=model,
+        train_set=dataset,
+        test_set=None,
+        batch_size=config.batch_size,
     )
-    dataset = create_features(dataset, config=config)
-    return user_id, dataset
+    weights = trainer.train()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(weights, path)
+    print(f"Saved pretrained weights to {path}")
+    return weights
 
 
 if __name__ == "__main__":
-    model: TrainableModel
-    n_epoch = 32
-    lr = 4e-2
-    wd = 1e-4
-    batch_size = 65536
-    if config.model_name == "GRU":
-        model = RNN(config)
-        model.set_hyperparameters(lr=lr, wd=wd, n_epoch=n_epoch)
-    elif config.model_name == "GRU-P":
-        model = GRU_P(config)
-        model.set_hyperparameters(lr=lr, wd=wd, n_epoch=n_epoch)
-    elif config.model_name == "Transformer":
-        model = Transformer(config)
-        model.set_hyperparameters(lr=lr, wd=wd, n_epoch=n_epoch)
-    elif config.model_name == "NN-17":
-        model = NN_17(config)
-        model.set_hyperparameters(lr=lr, wd=wd, n_epoch=n_epoch)
-    elif config.model_name == "FSRS-6":
-        n_epoch = 5
-        lr = 4e-2
-        wd = 0
-        batch_size = 512
-        model = FSRS6(config)
-        model.set_hyperparameters(lr=lr, wd=wd, n_epoch=n_epoch)
-
-    total = 0
-    for param in model.parameters():
-        total += param.numel()
-
-    print(total)
-
-    pretrain_num = 500
-    pretrain_users = [i for i in range(1, pretrain_num + 1)]
-
-    df_dict = {}
-
-    with ThreadPoolExecutor() as executor:
-        futures = [
-            executor.submit(
-                process_user,
-                user_id,
-            )
-            for user_id in pretrain_users
-        ]
-        for future in tqdm(as_completed(futures), total=len(futures)):
-            user_id, dataset = future.result()
-            df_dict[user_id] = dataset
-
-    df_list = [df_dict[user_id] for user_id in pretrain_users]
-    df = pd.concat(df_list, axis=0)
-
-    trainer = Trainer(
-        model,
-        df,
-        None,
-        batch_size=batch_size,
+    parser = create_parser()
+    parser.add_argument("--output", required=True, help="Path to save pretrained weights")
+    parser.add_argument(
+        "--max-users",
+        type=int,
+        default=None,
+        help="Limit the number of users loaded for pretraining",
     )
-    parameters = trainer.train()
-    print(parameters)
-    torch.save(
-        parameters, f"./pretrain/{config.get_evaluation_file_name()}_pretrain.pth"
-    )
+    args = parser.parse_args()
+    config = Config(args)
 
-    # my_collection = Collection(FSRS6(parameters))
-    # retentions, stabilities, difficulties = my_collection.batch_predict(df)
-    # df["p"] = retentions
-    # if stabilities:
-    #     df["stability"] = stabilities
-    # if difficulties:
-    #     df["difficulty"] = difficulties
-    # fig = plt.figure()
-    # plot_brier(
-    #     df["p"],
-    #     df["y"],
-    #     ax=fig.add_subplot(111),
-    # )
-    # fig.savefig(f"./{str(pretrain_users)}_calibration.png")
-    # fig2 = plt.figure()
-    # optimizer = Optimizer()
-    # optimizer.calibration_helper(
-    #     df[["stability", "p", "y"]].copy(),
-    #     "stability",
-    #     lambda x: math.pow(1.2, math.floor(math.log(x, 1.2))),
-    #     True,
-    #     fig2.add_subplot(111),
-    # )
-    # fig2.savefig(f"./{str(pretrain_users)}_stability.png")
+    if config.model_name not in {"FSRS-6", "FSRS-6-cefr"}:
+        raise SystemExit("pretrain.py currently supports only FSRS-6 variants.")
+
+    revlog_root = config.data_path / "revlogs"
+    if not revlog_root.exists():
+        raise SystemExit(f"Revlog directory not found: {revlog_root}")
+
+    user_dirs = sorted(revlog_root.glob("user_id=*"))
+    if args.max_users is not None:
+        user_dirs = user_dirs[: args.max_users]
+
+    if not user_dirs:
+        raise SystemExit("No user directories found for pretraining.")
+    loader = UserDataLoader(config)
+    frames: list[pd.DataFrame] = []
+    output_path = Path(args.output)
+    checkpoint_dir = output_path.parent / f"{output_path.stem}_checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    last_checkpoint_users = 0
+    last_checkpoint_weights: Optional[dict] = None
+
+    for idx, user_dir in enumerate(tqdm(user_dirs, desc="Loading users"), start=1):
+        user_id = user_dir.name.replace("user_id=", "")
+        df = loader.load_user_data(user_id)
+        frames.append(df)
+
+        if idx % CHECKPOINT_INTERVAL == 0:
+            dataset = pd.concat(frames, ignore_index=True)
+            ckpt_path = checkpoint_dir / f"{output_path.stem}_users{idx}.pth"
+            last_checkpoint_weights = train_and_save(config, dataset, ckpt_path)
+            last_checkpoint_users = idx
+
+    total_users = len(frames)
+    full_dataset = pd.concat(frames, ignore_index=True)
+
+    if total_users == last_checkpoint_users and last_checkpoint_weights is not None:
+        torch.save(last_checkpoint_weights, output_path)
+        print(f"Saved pretrained weights to {output_path}")
+    else:
+        train_and_save(config, full_dataset, output_path)
