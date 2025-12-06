@@ -27,6 +27,10 @@ def main() -> None:
     def extract_weights(obj: Any):
         if torch.is_tensor(obj):
             return obj
+        if isinstance(obj, (list, tuple)) and all(
+            isinstance(x, (int, float)) for x in obj
+        ):
+            return torch.tensor(obj)
         if isinstance(obj, Mapping):
             if "w" in obj:
                 return torch.as_tensor(obj["w"])
