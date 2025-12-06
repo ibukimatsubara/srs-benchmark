@@ -7,6 +7,38 @@ from pathlib import Path
 import torch
 from typing import Any, Mapping
 
+BASELINE_FSRS6 = [
+    0.212,
+    1.2931,
+    2.3065,
+    8.2956,
+    6.4133,
+    0.8334,
+    3.0194,
+    0.001,
+    1.8722,
+    0.1666,
+    0.796,
+    1.4835,
+    0.0614,
+    0.2629,
+    1.6483,
+    0.6014,
+    1.8729,
+    0.5425,
+    0.0912,
+    0.0658,
+    0.1542,
+]
+
+BASELINE_FSRS6_CEFR = BASELINE_FSRS6 + [3.0, 4.0, 5.0, 6.5, 8.0, 9.0]
+
+BASELINE_MAP = {len(BASELINE_FSRS6): BASELINE_FSRS6, len(BASELINE_FSRS6_CEFR): BASELINE_FSRS6_CEFR}
+
+GREEN = "\033[32m"
+RED = "\033[31m"
+RESET = "\033[0m"
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Inspect FSRS weight file")
@@ -56,14 +88,33 @@ def main() -> None:
 
     weights = torch.as_tensor(weights).tolist()
 
+    baseline = BASELINE_MAP.get(len(weights))
+
+    print(f"Total parameters: {len(weights)}")
+
+    def format_value(idx: int, value: float) -> str:
+        if not baseline:
+            return f"{value:.6f}"
+        delta = value - baseline[idx]
+        color = GREEN if delta > 1e-9 else RED if delta < -1e-9 else ""
+        delta_text = f"{delta:+.6f}"
+        base_text = f"{baseline[idx]:.6f}"
+        if color:
+            delta_text = f"{color}{delta_text}{RESET}"
+        return f"{value:.6f} ({delta_text} vs {base_text})"
+
     if args.cefr_only:
         print("CEFR difficulty parameters (w[21-26]):")
-        for level, value in zip(["A1", "A2", "B1", "B2", "C1", "C2"], weights[21:27]):
-            print(f"  {level}: {value:.6f}")
+        for offset, level in enumerate(["A1", "A2", "B1", "B2", "C1", "C2"], start=21):
+            if offset >= len(weights):
+                break
+            value = weights[offset]
+            formatted = format_value(offset, value)
+            print(f"  {level}: {formatted}")
     else:
-        print(f"Total parameters: {len(weights)}")
         for idx, value in enumerate(weights):
-            print(f"w[{idx:02d}] = {value:.6f}")
+            formatted = format_value(idx, value)
+            print(f"w[{idx:02d}] = {formatted}")
 
 
 if __name__ == "__main__":
