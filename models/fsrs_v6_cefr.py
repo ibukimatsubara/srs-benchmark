@@ -135,64 +135,44 @@ class FSRS6CEFR(FSRS6):
         self.gamma = 1  # L2正則化係数
 
     def init_d_with_cefr(self, rating: Tensor, cefr_level: Tensor) -> Tensor:
+        """CEFR-aware difficulty initialization used for every review.
+
+        Not Found (0) は最難の C2 とみなし、常に CEFR パラメータを参照して
+        Difficulty の基準値を求める。
         """
-        CEFR-aware difficulty initialization
-
-        CEFRレベルに基づいてDifficultyの初期値を決定。
-        CEFR情報がない場合（cefr_level=0）は従来のFSRS-6ロジックを使用。
-
-        Args:
-            rating: 復習評価 (1-4)
-                1=Again, 2=Hard, 3=Good, 4=Easy
-            cefr_level: CEFRレベル (0-6)
-                0=Not Found, 1=A1, 2=A2, 3=B1, 4=B2, 5=C1, 6=C2
-
-        Returns:
-            初期Difficulty (1-10の範囲)
-
-        ロジック:
-            1. CEFRレベルに応じたベースDifficultyを取得 (w[21-26])
-            2. ratingに応じた微調整を適用
-            3. CEFR情報がない場合は従来の計算式を使用
-        """
-        # CEFRレベル別のベースDifficulty
-        # w[21]=A1, w[22]=A2, ..., w[26]=C2
+        # w[21]=A1, ..., w[26]=C2
         cefr_base_difficulties = torch.stack([
-            self.w[21],  # A1: 易しい
-            self.w[22],  # A2
-            self.w[23],  # B1
-            self.w[24],  # B2
-            self.w[25],  # C1
-            self.w[26],  # C2: 難しい
+            self.w[21],
+            self.w[22],
+            self.w[23],
+            self.w[24],
+            self.w[25],
+            self.w[26],
         ])
 
-        # CEFR情報がない場合（cefr_level=0）のフォールバック
-        # 従来のFSRS-6の計算式を使用
-        fallback_d = self.w[4] - torch.exp(self.w[5] * (rating - 1)) + 1
+        indices = cefr_level.to(dtype=torch.long) - 1
+        # Not Found(0) は C2 扱い -> index 5
+        c2_idx = torch.full_like(indices, 5)
+        indices = torch.where(indices < 0, c2_idx, indices)
+        indices = indices.clamp(0, 5)
 
-        # CEFRレベルに応じたベースDifficultyを選択
-        # cefr_level: 0=not found, 1=A1, 2=A2, ..., 6=C2
-        # インデックス: A1=0, A2=1, ..., C2=5
-        cefr_indices = (cefr_level - 1).clamp(0, 5).long()
-
-        # マスクを使用: cefr_level > 0 の場合のみCEFRベースを使用
-        has_cefr = cefr_level > 0
-        base_d = torch.where(
-            has_cefr,
-            cefr_base_difficulties[cefr_indices],
-            fallback_d
-        )
-
-        # ratingによる微調整
-        # rating=3(Good)が基準、Easy(4)で易しく、Hard(2)/Again(1)で難しく
-        # w[5]を使って調整の強さを制御
+        base_d = cefr_base_difficulties[indices]
         rating_adjustment = self.w[5] * (rating - 3)
+        return (base_d + rating_adjustment).clamp(1, 10)
 
-        # 最終Difficulty = ベース + rating調整
-        new_d = base_d + rating_adjustment
+    def next_d(self, state: Tensor, rating: Tensor, cefr_level: Optional[Tensor] = None) -> Tensor:
+        """Override to keep CEFR-aware mean reversion target."""
+        if cefr_level is None:
+            return super().next_d(state, rating)
 
-        # 1-10の範囲にクランプ
-        return new_d.clamp(1, 10)
+        delta_d = -self.w[6] * (rating - 3)
+        new_d = state[:, 1] + self.linear_damping(delta_d, state[:, 1])
+        target = self.init_d_with_cefr(
+            torch.full_like(rating, 4.0),
+            cefr_level,
+        )
+        new_d = self.mean_reversion(target, new_d)
+        return new_d
 
     def step(self, X: Tensor, state: Tensor) -> Tensor:
         """
@@ -209,9 +189,11 @@ class FSRS6CEFR(FSRS6):
         Returns:
             新しいstate: shape[batch_size, 2]
         """
+        has_cefr = X.shape[1] > 2
+        cefr_level = X[:, 2] if has_cefr else None
+
         # 初回学習かどうかを判定
         if torch.equal(state, torch.zeros_like(state)):
-            # 初回学習: CEFRレベルを使用
             keys = torch.tensor([1, 2, 3, 4], device=self.config.device)
             keys = keys.view(1, -1).expand(X[:, 1].long().size(0), -1)
             index = (X[:, 1].long().unsqueeze(1) == keys).nonzero(as_tuple=True)
@@ -220,14 +202,10 @@ class FSRS6CEFR(FSRS6):
             new_s = torch.ones_like(state[:, 0], device=self.config.device)
             new_s[index[0]] = self.w[index[1]]
 
-            # Difficulty初期化（CEFR-aware）
-            if X.shape[1] > 2:
-                # cefr_levelが提供されている場合
-                cefr_level = X[:, 2]
+            if cefr_level is not None:
                 new_d = self.init_d_with_cefr(X[:, 1], cefr_level)
             else:
-                # cefr_levelがない場合は従来のロジック
-                new_d = self.init_d(X[:, 1])
+                new_d = super().init_d(X[:, 1])
 
             new_d = new_d.clamp(1, 10)
         else:
@@ -245,7 +223,7 @@ class FSRS6CEFR(FSRS6):
                     self.stability_after_failure(state, r),
                 ),
             )
-            new_d = self.next_d(state, X[:, 1])
+            new_d = self.next_d(state, X[:, 1], cefr_level)
             new_d = new_d.clamp(1, 10)
 
         new_s = new_s.clamp(self.config.s_min, 36500)
